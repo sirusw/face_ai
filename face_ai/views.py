@@ -10,6 +10,81 @@ from skimage.color import rgb2hsv, hsv2rgb
 import numpy as np
 import io
 from PIL import Image, ImageEnhance
+from .settings import BOT_ID, API_KEY, WORKFLOW_ID
+import json
+import time
+import requests
+import base64
+
+
+
+class CozeAPIClient:
+    def __init__(self):
+        # 更新为新的API地址
+        self.url = "https://api.coze.com/v1/workflow/run"
+        self.headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+        self.last_request_time = None
+        self.request_count = 0
+
+    def run_workflow(self, workflow_id, face_data):
+        data = {
+            "workflow_id": workflow_id,
+            "parameters": face_data
+        }
+
+        # 检查请求速率是否符合限制
+        if self.request_count >= 5 and (self.last_request_time is not None and time.time() - self.last_request_time < 60):
+            print("请求过于频繁，等待一段时间后再试")
+            time.sleep(60 - (time.time() - self.last_request_time))
+
+        try:
+            response = requests.post(self.url, headers=self.headers, data=json.dumps(data))
+            response.raise_for_status()
+            self.request_count += 1
+            self.last_request_time = time.time()
+            return response.json()
+        except requests.RequestException as e:
+            if response is not None and response.status_code == 4100:
+                print(f"错误码4100：{response.json().get('msg')}，详情：{response.json().get('detail')}")
+            else:
+                print(f"请求出错: {e}")
+            return None
+        
+coze_client = CozeAPIClient()
+
+def convert_content_file_to_base64(content_file):
+    # 读取ContentFile的内容
+    content = content_file.read()
+    
+    # 将内容编码为Base64
+    base64_encoded = base64.b64encode(content).decode('utf-8')
+    
+    return base64_encoded
+
+
+def upload_file_to_coze(file_obj):
+    url = "https://api.coze.com/v1/files/upload"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}"
+    }
+    try:
+        if isinstance(file_obj, ContentFile):
+            file_obj.seek(0)
+            file_name = file_obj.name
+            file_data = file_obj.read()
+        else:
+            file_name = "temp_file"  # 如果不是ContentFile，给一个默认文件名，你可以根据实际情况调整
+            file_data = file_obj
+        files = {'file': (file_name, file_data)}  # 构建符合要求的files参数格式，包含文件名和文件数据
+        response = requests.post(url, headers=headers, files=files)
+        response.raise_for_status()
+        return response.json().get('data', {}).get('id')
+    except requests.RequestException as e:
+        print(f"文件上传出错: {e}")
+        return None
 
 @api_view(['POST'])
 def face_ai(request):
@@ -85,9 +160,15 @@ def face_ai(request):
                 enhancer = ImageEnhance.Sharpness(pil_image)
                 pil_image = enhancer.enhance(1.5)  # 鲜明度+50
                 enhancer = ImageEnhance.Contrast(pil_image)
-                pil_image = enhancer.enhance(1.5)  # 对比度+50
+                pil_image = enhancer.enhance(1.25)  # 高光+50
+                enhancer = ImageEnhance.Contrast(pil_image)
+                pil_image = enhancer.enhance(1.25)  # 阴影+50
+                enhancer = ImageEnhance.Contrast(pil_image)
+                pil_image = enhancer.enhance(1.25)  # 对比度+50
+                enhancer = ImageEnhance.Contrast(pil_image)
+                pil_image = enhancer.enhance(1.25)  # 黑点+50
                 enhancer = ImageEnhance.Color(pil_image)
-                pil_image = enhancer.enhance(1.5)  # 饱和度+50
+                pil_image = enhancer.enhance(0.75)  # 色温-50
                 enhancer = ImageEnhance.Brightness(pil_image)
                 pil_image = enhancer.enhance(1.5)  # 清晰度+50
 
@@ -150,10 +231,57 @@ def face_ai(request):
                 }
                 
                 face_test_serializer = FaceTestSerializer(data=face_test_data)
+
+
+                # # 上传原始图片文件并获取id
+                # image_file_id = upload_file_to_coze(image_file)
+                # if image_file_id is None:
+                #     return Response({"detail": "原始图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+
+                # 上传处理后的图片文件并获取id
+                processed_image_io.seek(0)  # 确保文件指针在开头，以便上传
+                processed_file_id = upload_file_to_coze(processed_image_io)
+                if processed_file_id is None:
+                    return Response({"detail": "处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+
+                # 上传过敏处理后的图片文件并获取id
+                allergy_image_io.seek(0)
+                allergy_file_id = upload_file_to_coze(allergy_image_io)
+                if allergy_file_id is None:
+                    return Response({"detail": "过敏处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+
+                # 上传雀斑处理后的图片文件并获取id
+                freckles_image_io.seek(0)
+                freckles_file_id = upload_file_to_coze(freckles_image_io)
+                if freckles_file_id is None:
+                    return Response({"detail": "雀斑处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+
+                face_test_data = {
+                    'name' : user.name,
+                    'images_wrinkle': [{"file_id": processed_file_id}],
+                    'images_allergy': [{"file_id":allergy_file_id}],
+                    'images_spot': [{"file_id":freckles_file_id}],
+                    'images_pore': [{"file_id":processed_file_id}],
+                    'images_uv_spot': [{"file_id":processed_file_id}],
+                    'images_brown_spot': [{"file_id":processed_file_id}],
+                    'images_red_areas': [{"file_id":processed_file_id}],
+                    'images_porphyrins': [{"file_id":processed_file_id}],
+                    'age': int(request.data.get('age')),
+                    'focus': request.data.get('focus'),
+                    'gender': request.data.get('gender'),
+                    'skin_type': request.data.get('skin_condition'),
+                    'cosmetic': False,
+                }
                 
                 if face_test_serializer.is_valid():
                     face_test_serializer.save()
-                    return Response(face_test_serializer.data, status=status.HTTP_201_CREATED)
+                
+                result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
+                if result:
+                    parsed_data = json.loads(result.get('data'))
+                    return Response(parsed_data)
+                
+                
                 
                 return Response(face_test_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -163,3 +291,4 @@ def face_ai(request):
         return Response({"detail": "Invalid image data."}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response({"detail": "Method not allowed."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+

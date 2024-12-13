@@ -32,7 +32,7 @@ WORKFLOW_ID = '7446762973215391762'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['faceai.us-east-2.elasticbeanstalk.com', 'venv.eba-rvuqvcci.us-west-2.elasticbeanstalk.com', 'localhost']
+ALLOWED_HOSTS = ['faceaienv.eba-rvuqvcci.us-west-2.elasticbeanstalk.com', 'localhost', '127.0.0.1']
 
 
 # Application definition

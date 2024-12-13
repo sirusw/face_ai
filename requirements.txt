@@ -7,9 +7,9 @@ colorama==0.4.6
 idna==3.10
 jmespath==1.0.1
 pathspec==0.10.1
-pypiwin32==223
+# pypiwin32==223
 python-dateutil==2.9.0.post0
-pywin32==308
+# pywin32==308
 PyYAML==6.0.2
 requests==2.32.3
 semantic-version==2.10.0

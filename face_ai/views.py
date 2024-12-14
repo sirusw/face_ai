@@ -278,9 +278,9 @@ def face_ai(request):
                     skin_data = json.loads(parsed_data['skin'])  # 解析皮肤信息
 
                     # 返回合并后的JSON响应
-                    skin_data['评分']['皱纹']['processed_general'] = convert_content_file_to_base64(processed_file)
-                    skin_data['评分']['斑点']['processed_freckles'] = convert_content_file_to_base64(freckles_file)
-                    skin_data['评分']['红敏']['processed_allergy'] = convert_content_file_to_base64(allergy_file)
+                    skin_data['评分']['皱纹']['img'] = convert_content_file_to_base64(processed_file)
+                    skin_data['评分']['斑点']['img'] = convert_content_file_to_base64(freckles_file)
+                    skin_data['评分']['红敏']['img'] = convert_content_file_to_base64(allergy_file)
 
                     return Response({
                         'products': products,

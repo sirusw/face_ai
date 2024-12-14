@@ -54,6 +54,7 @@ class CozeAPIClient:
 coze_client = CozeAPIClient()
 
 def convert_content_file_to_base64(content_file):
+    content_file.seek(0)
     content = content_file.read()
     base64_encoded = base64.b64encode(content).decode('utf-8')
     return base64_encoded
@@ -261,14 +262,10 @@ def face_ai(request):
                     'skin_type': request.data.get('skin_type'),
                     'makeup_style': request.data.get('makeup_style')
                 }
-                print(face_test_data)
                 
                 if face_test_serializer.is_valid():
                     face_test_serializer.save()
-                print("开始调用coze接口")
                 result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
-                print(result)
-                print("调用coze接口结束")
                 if result:
                     parsed_data = json.loads(result.get('data'))
                     # 处理产品数据
@@ -284,7 +281,10 @@ def face_ai(request):
                     return Response({
                         'products': products,
                         'skin': skin_data,
-                        'promo_code': 'CRAZYFRIDAYVIVO50'
+                        'promo_code': 'CRAZYFRIDAYVIVO50',
+                        'processed_general': convert_content_file_to_base64(processed_file),
+                        'processed_allergy': convert_content_file_to_base64(allergy_file),
+                        'processed_freckles': convert_content_file_to_base64(freckles_file)
                     })
                 
                 return Response(face_test_serializer.errors, status=status.HTTP_400_BAD_REQUEST)

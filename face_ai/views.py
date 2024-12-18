@@ -288,14 +288,14 @@ def face_ai(request):
                         'promo_code': 'XMASSALE2024'
                     })
                 
-                return Response(face_test_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
             except Exception as e:
-                return Response({"detail": "Invalid image data.", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "Exception occurred while processing image data.", "error": str(e.with_traceback)}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response({"detail": "Invalid image data."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"detail": "Image data is missing or invalid."}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response({"detail": "Method not allowed."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+    return Response({"detail": "HTTP method not allowed. Only POST requests are accepted."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
 def get_client_ip(request):
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')

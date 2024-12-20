@@ -16,6 +16,7 @@ import time
 import requests
 import base64
 from django.utils import timezone
+import os
 
 
 class CozeAPIClient:
@@ -175,7 +176,7 @@ def face_ai(request):
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         count_today = FaceTest.objects.filter(ip=ip, time__gte=today_start).count()
         
-        if count_today >= 2:
+        if count_today >= 10:
             return Response({"error": "每天最多只能提交两次"}, status=429)
 
         user_id = request.data.get('user_id', '')
@@ -221,10 +222,6 @@ def face_ai(request):
 
                 face_test_data = {
                     'user': user_id,
-                    'image': image_file,
-                    'processed_general': processed_file,
-                    'processed_allergy': allergy_file,
-                    'processed_freckles': freckles_file,
                     'age': request.data.get('age'),
                     'focus': request.data.get('focus'),
                     'gender': request.data.get('gender'),
@@ -262,7 +259,7 @@ def face_ai(request):
                     'skin_type': request.data.get('skin_type'),
                     'makeup_style': request.data.get('makeup_style')
                 }
-                
+
                 if face_test_serializer.is_valid():
                     face_test_serializer.save()
                 result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
@@ -282,6 +279,34 @@ def face_ai(request):
                     skin_data['评分']['斑点']['img'] = convert_content_file_to_base64(freckles_file)
                     skin_data['评分']['红敏']['img'] = convert_content_file_to_base64(allergy_file)
 
+                    
+                    image_file.close()
+                    processed_file.close()
+                    allergy_file.close()
+                    freckles_file.close()
+                    image_file_path = os.path.join('\media\images', image_file.name)
+                    processed_file_path = os.path.join('\media\processed_images', processed_file.name)
+                    allergy_file_path = os.path.join('\media\processed_images', allergy_file.name)
+                    freckles_file_path = os.path.join('\media\processed_images', freckles_file.name)
+
+                    print(image_file_path)
+                    print(processed_file_path)
+                    print(allergy_file_path)
+                    print(freckles_file_path)
+                    if os.path.exists(image_file_path):
+                        os.remove(image_file_path)
+                        print('删除原始图片')
+                    if os.path.exists(processed_file_path):
+                        os.remove(processed_file_path)
+                        print('删除处理后图片')
+                    if os.path.exists(allergy_file_path):
+                        os.remove(allergy_file_path)
+                        print('删除过敏处理后图片')
+                    if os.path.exists(freckles_file_path):
+                        os.remove(freckles_file_path)
+                        print('删除雀斑处理后图片')
+                        
+
                     return Response({
                         'products': products,
                         'skin': skin_data,
@@ -291,7 +316,7 @@ def face_ai(request):
                 return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
             except Exception as e:
-                return Response({"detail": "Exception occurred while processing image data.", "error": str(e.with_traceback)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "Exception occurred while processing image data.", "error": e}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({"detail": "Image data is missing or invalid."}, status=status.HTTP_400_BAD_REQUEST)
 

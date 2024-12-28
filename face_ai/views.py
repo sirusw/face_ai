@@ -18,6 +18,7 @@ import requests
 import base64
 from django.utils import timezone
 import os
+import tempfile
 
 
 class CozeAPIClient:
@@ -204,156 +205,140 @@ def face_ai(request):
                 format, imgstr = image_data.split(';base64,')
                 ext = format.split('/')[-1]
                 decoded_image = base64.b64decode(imgstr)
-                image_file = ContentFile(decoded_image, name=f"{user_id}.{ext}")
 
                 try:
                     # 读取原始图像，对大尺寸图像进行缩放
                     original_image = skio.imread(io.BytesIO(decoded_image))
-                    if original_image.size > 1024 * 1024:  # 大于1MB
-                        while original_image.nbytes > 1024 * 1024:  # 大于1MB
-                            original_image = resize(original_image, (original_image.shape[0] // 2, original_image.shape[1] // 2),
-                                                    anti_aliasing=True)
+                    while original_image.size > 1024 * 1024:  # 大于1MB
+                        original_image = resize(original_image, (original_image.shape[0] // 2, original_image.shape[1] // 2),
+                                                anti_aliasing=True)
                 except Exception as e:
                     return Response({"detail": "读取原始图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                try:
-                    # 处理通用图像
-                    processed_image = process_image_general(original_image)
-                    with io.BytesIO() as processed_image_io:
+                # 使用临时目录来管理中间文件，确保最后能统一清理
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    try:
+                        # 处理通用图像
+                        processed_image = process_image_general(original_image)
+                        processed_image_io = io.BytesIO()
                         skio.imsave(processed_image_io, processed_image, plugin='pil', format_str=ext.upper())
                         processed_image_io.seek(0)
-                        processed_file = ContentFile(processed_image_io.read(), name=f"general_{user_id}.{ext}")
-                except Exception as e:
-                    return Response({"detail": "处理通用图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                        processed_file_name = f"general_{user_id}.{ext}"
+                        processed_file_path = os.path.join(temp_dir, processed_file_name)
+                        with open(processed_file_path, 'wb') as processed_file:
+                            processed_file.write(processed_image_io.read())
+                    except Exception as e:
+                        return Response({"detail": "处理通用图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                try:
-                    # 处理过敏相关图像
-                    allergy_image = process_image_allergy(original_image)
-                    with io.BytesIO() as allergy_image_io:
+                    try:
+                        # 处理过敏相关图像
+                        allergy_image = process_image_allergy(original_image)
+                        allergy_image_io = io.BytesIO()
                         skio.imsave(allergy_image_io, allergy_image, plugin='pil', format_str=ext.upper())
                         allergy_image_io.seek(0)
-                        allergy_file = ContentFile(allergy_image_io.read(), name=f"allergy_{user_id}.{ext}")
-                except Exception as e:
-                    return Response({"detail": "处理过敏图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                        allergy_file_name = f"allergy_{user_id}.{ext}"
+                        allergy_file_path = os.path.join(temp_dir, allergy_file_name)
+                        with open(allergy_file_path, 'wb') as allergy_file:
+                            allergy_file.write(allergy_image_io.read())
+                    except Exception as e:
+                        return Response({"detail": "处理过敏图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                try:
-                    # 处理雀斑相关图像
-                    freckles_image = process_image_freckles(original_image)
-                    with io.BytesIO() as freckles_image_io:
+                    try:
+                        # 处理雀斑相关图像
+                        freckles_image = process_image_freckles(original_image)
+                        freckles_image_io = io.BytesIO()
                         skio.imsave(freckles_image_io, freckles_image, plugin='pil', format_str=ext.upper())
                         freckles_image_io.seek(0)
-                        freckles_file = ContentFile(freckles_image_io.read(), name=f"freckles_{user_id}.{ext}")
-                except Exception as e:
-                    return Response({"detail": "处理雀斑图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-                face_test_data = {
-                    'user': user_id,
-                    'age': request.data.get('age'),
-                    'focus': request.data.get('focus'),
-                    'gender': request.data.get('gender'),
-                    'skin_type': request.data.get('skin_type'),
-                    'makeup_style': request.data.get('makeup_style'),
-                    'ip': get_client_ip(request)
-                }
-                face_test_serializer = FaceTestSerializer(data=face_test_data)
-
-                try:
-                    with io.BytesIO() as processed_image_io:
-                        skio.imsave(processed_image_io, processed_image, plugin='pil', format_str=ext.upper())
-                        processed_image_io.seek(0)
-                        processed_file_id = upload_file_to_coze(processed_image_io)
-                    if processed_file_id is None:
-                        return Response({"detail": "处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
-                except Exception as e:
-                    return Response({"detail": "上传处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-                try:
-                    with io.BytesIO() as allergy_image_io:
-                        skio.imsave(allergy_image_io, allergy_image, plugin='pil', format_str=ext.upper())
-                        allergy_image_io.seek(0)
-                        allergy_file_id = upload_file_to_coze(allergy_image_io)
-                    if allergy_file_id is None:
-                        return Response({"detail": "过敏处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
-                except Exception as e:
-                    return Response({"detail": "上传过敏处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-                try:
-                    with io.BytesIO() as freckles_image_io:
-                        skio.imsave(freckles_image_io, freckles_image, plugin='pil', format_str=ext.upper())
-                        freckles_image_io.seek(0)
-                        freckles_file_id = upload_file_to_coze(freckles_image_io)
-                    if freckles_file_id is None:
-                        return Response({"detail": "雀斑处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
-                except Exception as e:
-                    return Response({"detail": "上传雀斑处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-                face_test_data = {
-                    'images_wrinkle': {"file_id": processed_file_id},
-                    'images_allergy': {"file_id": allergy_file_id},
-                    'images_spot': {"file_id": freckles_file_id},
-                    'age': int(request.data.get('age')),
-                    'focus': request.data.get('focus'),
-                    'gender': request.data.get('gender'),
-                    'skin_type': request.data.get('skin_type'),
-                    'makeup_style': request.data.get('makeup_style')
-                }
-
-                if face_test_serializer.is_valid():
-                    try:
-                        face_test_serializer.save()
+                        freckles_file_name = f"freckles_{user_id}.{ext}"
+                        freckles_file_path = os.path.join(temp_dir, freckles_file_name)
+                        with open(freckles_file_path, 'wb') as freckles_file:
+                            freckles_file.write(freckles_image_io.read())
                     except Exception as e:
-                        return Response({"detail": "保存面部测试数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-                else:
-                    return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+                        return Response({"detail": "处理雀斑图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
-                if result:
+                    face_test_data = {
+                        'user': user_id,
+                        'age': request.data.get('age'),
+                        'focus': request.data.get('focus'),
+                        'gender': request.data.get('gender'),
+                        'skin_type': request.data.get('skin_type'),
+                        'makeup_style': request.data.get('makeup_style'),
+                        'ip': get_client_ip(request)
+                    }
+                    face_test_serializer = FaceTestSerializer(data=face_test_data)
+
                     try:
-                        parsed_data = json.loads(result.get('data'))
-                        # 处理产品数据
-                        products = []
-                        for item in parsed_data['product']:
-                            product_output = json.loads(item['output'])  # 解析嵌套的JSON字符串
-                            products.append(product_output)
-
-                        # 处理皮肤数据
-                        skin_data = json.loads(parsed_data['skin'])  # 解析皮肤信息
-
-                        # 返回合并后的JSON响应
-                        skin_data['评分']['皱纹']['img'] = convert_content_file_to_base64(processed_file)
-                        skin_data['评分']['斑点']['img'] = convert_content_file_to_base64(freckles_file)
-                        skin_data['评分']['红敏']['img'] = convert_content_file_to_base64(allergy_file)
-
-                        image_file.close()
-                        processed_file.close()
-                        allergy_file.close()
-                        freckles_file.close()
-                        image_file_path = os.path.join('\\media\\images', image_file.name)
-                        processed_file_path = os.path.join('\\media\\processed_images', processed_file.name)
-                        allergy_file_path = os.path.join('\\media\\processed_images', allergy_file.name)
-                        freckles_file_path = os.path.join('\\media\\processed_images', freckles_file.name)
-
-                        if os.path.exists(image_file_path):
-                            os.remove(image_file_path)
-                            print('删除原始图片')
-                        if os.path.exists(processed_file_path):
-                            os.remove(processed_file_path)
-                            print('删除处理后图片')
-                        if os.path.exists(allergy_file_path):
-                            os.remove(allergy_file_path)
-                            print('删除过敏处理后图片')
-                        if os.path.exists(freckles_file_path):
-                            os.remove(freckles_file_path)
-                            print('删除雀斑处理后图片')
-
-                        return Response({
-                            'products': products,
-                            'skin': skin_data,
-                            'promo_code': 'XMASSALE2024'
-                        })
+                        with open(processed_file_path, 'rb') as processed_image_file:
+                            processed_file_id = upload_file_to_coze(processed_image_file)
+                        if processed_file_id is None:
+                            return Response({"detail": "处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
                     except Exception as e:
-                        return Response({"detail": "解析或处理Coze客户端返回数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-                return Response({"detail": "Coze客户端工作流运行失败，未获取到有效结果"}, status=status.HTTP_400_BAD_REQUEST)
+                        return Response({"detail": "上传处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+                    try:
+                        with open(allergy_file_path, 'rb') as allergy_image_file:
+                            allergy_file_id = upload_file_to_coze(allergy_image_file)
+                        if allergy_file_id is None:
+                            return Response({"detail": "过敏处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                    except Exception as e:
+                        return Response({"detail": "上传过敏处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+                    try:
+                        with open(freckles_file_path, 'rb') as freckles_image_file:
+                            freckles_file_id = upload_file_to_coze(freckles_image_file)
+                        if freckles_file_id is None:
+                            return Response({"detail": "雀斑处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                    except Exception as e:
+                        return Response({"detail": "上传雀斑处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+                    face_test_data = {
+                        'images_wrinkle': {"file_id": processed_file_id},
+                        'images_allergy': {"file_id": allergy_file_id},
+                        'images_spot': {"file_id": freckles_file_id},
+                        'age': int(request.data.get('age')),
+                        'focus': request.data.get('focus'),
+                        'gender': request.data.get('gender'),
+                        'skin_type': request.data.get('skin_type'),
+                        'makeup_style': request.data.get('makeup_style')
+                    }
+
+                    if face_test_serializer.is_valid():
+                        try:
+                            face_test_serializer.save()
+                        except Exception as e:
+                            return Response({"detail": "保存面部测试数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                    else:
+                        return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
+                    result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
+                    if result:
+                        try:
+                            parsed_data = json.loads(result.get('data'))
+                            # 处理产品数据
+                            products = []
+                            for item in parsed_data['product']:
+                                product_output = json.loads(item['output'])  # 解析嵌套的JSON字符串
+                                products.append(product_output)
+
+                            # 处理皮肤数据
+                            skin_data = json.loads(parsed_data['skin'])  # 解析皮肤信息
+
+                            # 返回合并后的JSON响应
+                            with open(processed_file_path, 'rb') as processed_file:
+                                skin_data['评分']['皱纹']['img'] = convert_content_file_to_base64(processed_file)
+                            with open(freckles_file_path, 'rb') as freckles_file:
+                                skin_data['评分']['斑点']['img'] = convert_content_file_to_base64(freckles_file)
+                            with open(allergy_file_path, 'rb') as allergy_file:
+                                skin_data['评分']['红敏']['img'] = convert_content_file_to_base64(allergy_file)
+
+                            return Response({
+                                'products': products,
+                                'skin': skin_data,
+                                'promo_code': 'XMASSALE2024'
+                            })
+                        except Exception as e:
+                            return Response({"detail": "解析或处理Coze客户端返回数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"detail": "Coze客户端工作流运行失败，未获取到有效结果"}, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
                 return Response({"detail": "基础图像数据处理出现异常", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 

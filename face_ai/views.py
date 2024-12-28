@@ -3,14 +3,15 @@ from django.core.files.base import ContentFile
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .models import User, FaceTest
-from .serializers import FaceTestSerializer
+from.models import User, FaceTest
+from.serializers import FaceTestSerializer
 from skimage import io as skio, exposure, img_as_ubyte
 from skimage.color import rgb2hsv, hsv2rgb
+from skimage.transform import resize  # 新增导入，用于图像缩放
 import numpy as np
 import io
 from PIL import Image, ImageEnhance
-from .settings import BOT_ID, API_KEY, WORKFLOW_ID
+from.settings import BOT_ID, API_KEY, WORKFLOW_ID
 import json
 import time
 import requests
@@ -51,14 +52,17 @@ class CozeAPIClient:
             else:
                 print(f"请求出错: {e}")
             return None
-        
+
+
 coze_client = CozeAPIClient()
+
 
 def convert_content_file_to_base64(content_file):
     content_file.seek(0)
     content = content_file.read()
     base64_encoded = base64.b64encode(content).decode('utf-8')
     return base64_encoded
+
 
 def upload_file_to_coze(file_obj):
     url = "https://api.coze.com/v1/files/upload"
@@ -81,6 +85,7 @@ def upload_file_to_coze(file_obj):
         print(f"文件上传出错: {e}")
         return None
 
+
 def process_image_general(original_image):
     processed_image = exposure.adjust_gamma(original_image, gamma=0.75)
     hsv_image = rgb2hsv(processed_image)
@@ -91,7 +96,7 @@ def process_image_general(original_image):
     hsv_image[..., 1] = np.clip(hsv_image[..., 1] * 1.5, 0, 1)
     processed_image = hsv2rgb(hsv_image)
     pil_image = Image.fromarray((processed_image * 255).astype(np.uint8))
-    
+
     enhancer = ImageEnhance.Sharpness(pil_image)
     pil_image = enhancer.enhance(1.5)
     enhancer = ImageEnhance.Contrast(pil_image)
@@ -100,10 +105,11 @@ def process_image_general(original_image):
     pil_image = enhancer.enhance(1.5)
     enhancer = ImageEnhance.Brightness(pil_image)
     pil_image = enhancer.enhance(1.5)
-    
+
     processed_image = np.array(pil_image) / 255.0
     processed_image = img_as_ubyte(processed_image)
     return processed_image
+
 
 def process_image_allergy(original_image):
     allergy_image = exposure.adjust_gamma(original_image, gamma=0.75)
@@ -116,16 +122,13 @@ def process_image_allergy(original_image):
     allergy_image = hsv2rgb(hsv_image)
     pil_image = Image.fromarray((allergy_image * 255).astype(np.uint8))
 
+    # 计算总的对比度增强倍数，合并重复的对比度增强操作
+    contrast_factor = 1.25 ** 4
+    enhancer = ImageEnhance.Contrast(pil_image)
+    pil_image = enhancer.enhance(contrast_factor)
+
     enhancer = ImageEnhance.Sharpness(pil_image)
     pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.25)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.25)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.25)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.25)
     enhancer = ImageEnhance.Color(pil_image)
     pil_image = enhancer.enhance(0.75)
     enhancer = ImageEnhance.Brightness(pil_image)
@@ -134,6 +137,7 @@ def process_image_allergy(original_image):
     allergy_image = np.array(pil_image) / 255.0
     allergy_image = img_as_ubyte(allergy_image)
     return allergy_image
+
 
 def process_image_freckles(original_image):
     freckles_image = exposure.adjust_gamma(original_image, gamma=0.625)
@@ -169,16 +173,18 @@ def process_image_freckles(original_image):
     freckles_image = img_as_ubyte(freckles_image)
     return freckles_image
 
+
 @api_view(['POST'])
 def face_ai(request):
     if request.method == 'POST':
+        # 获取客户端IP
         ip = get_client_ip(request)
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         count_today = FaceTest.objects.filter(ip=ip, time__gte=today_start).count()
-        
         if count_today >= 10:
             return Response({"error": "每天最多只能提交两次"}, status=429)
 
+        # 处理用户相关数据
         user_id = request.data.get('user_id', '')
         if not user_id:
             last_user = User.objects.all().order_by('id').last()
@@ -189,36 +195,56 @@ def face_ai(request):
             'source': request.data.get('source', ''),
             'reference_code': request.data.get('reference_code', '')
         }
-        
         user, _ = User.objects.get_or_create(user_id=user_id, defaults=user_data)
-        
+
         image_data = request.data.get('image')
         if image_data and image_data.startswith('data:image'):
             try:
+                # 解析图像数据格式并解码
                 format, imgstr = image_data.split(';base64,')
                 ext = format.split('/')[-1]
                 decoded_image = base64.b64decode(imgstr)
                 image_file = ContentFile(decoded_image, name=f"{user_id}.{ext}")
 
-                original_image = skio.imread(io.BytesIO(decoded_image))
+                try:
+                    # 读取原始图像，对大尺寸图像进行缩放
+                    original_image = skio.imread(io.BytesIO(decoded_image))
+                    if original_image.size > 1024 * 1024:  # 大于1MB
+                        while original_image.nbytes > 1024 * 1024:  # 大于1MB
+                            original_image = resize(original_image, (original_image.shape[0] // 2, original_image.shape[1] // 2),
+                                                    anti_aliasing=True)
+                except Exception as e:
+                    return Response({"detail": "读取原始图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                processed_image = process_image_general(original_image)
-                processed_image_io = io.BytesIO()
-                skio.imsave(processed_image_io, processed_image, plugin='pil', format_str=ext.upper())
-                processed_image_io.seek(0)
-                processed_file = ContentFile(processed_image_io.read(), name=f"general_{user_id}.{ext}")
+                try:
+                    # 处理通用图像
+                    processed_image = process_image_general(original_image)
+                    with io.BytesIO() as processed_image_io:
+                        skio.imsave(processed_image_io, processed_image, plugin='pil', format_str=ext.upper())
+                        processed_image_io.seek(0)
+                        processed_file = ContentFile(processed_image_io.read(), name=f"general_{user_id}.{ext}")
+                except Exception as e:
+                    return Response({"detail": "处理通用图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                allergy_image = process_image_allergy(original_image)
-                allergy_image_io = io.BytesIO()
-                skio.imsave(allergy_image_io, allergy_image, plugin='pil', format_str=ext.upper())
-                allergy_image_io.seek(0)
-                allergy_file = ContentFile(allergy_image_io.read(), name=f"allergy_{user_id}.{ext}")
+                try:
+                    # 处理过敏相关图像
+                    allergy_image = process_image_allergy(original_image)
+                    with io.BytesIO() as allergy_image_io:
+                        skio.imsave(allergy_image_io, allergy_image, plugin='pil', format_str=ext.upper())
+                        allergy_image_io.seek(0)
+                        allergy_file = ContentFile(allergy_image_io.read(), name=f"allergy_{user_id}.{ext}")
+                except Exception as e:
+                    return Response({"detail": "处理过敏图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                freckles_image = process_image_freckles(original_image)
-                freckles_image_io = io.BytesIO()
-                skio.imsave(freckles_image_io, freckles_image, plugin='pil', format_str=ext.upper())
-                freckles_image_io.seek(0)
-                freckles_file = ContentFile(freckles_image_io.read(), name=f"freckles_{user_id}.{ext}")
+                try:
+                    # 处理雀斑相关图像
+                    freckles_image = process_image_freckles(original_image)
+                    with io.BytesIO() as freckles_image_io:
+                        skio.imsave(freckles_image_io, freckles_image, plugin='pil', format_str=ext.upper())
+                        freckles_image_io.seek(0)
+                        freckles_file = ContentFile(freckles_image_io.read(), name=f"freckles_{user_id}.{ext}")
+                except Exception as e:
+                    return Response({"detail": "处理雀斑图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                 face_test_data = {
                     'user': user_id,
@@ -229,25 +255,37 @@ def face_ai(request):
                     'makeup_style': request.data.get('makeup_style'),
                     'ip': get_client_ip(request)
                 }
-
-                print(face_test_data)
-                
                 face_test_serializer = FaceTestSerializer(data=face_test_data)
 
-                processed_image_io.seek(0)
-                processed_file_id = upload_file_to_coze(processed_image_io)
-                if processed_file_id is None:
-                    return Response({"detail": "处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                try:
+                    with io.BytesIO() as processed_image_io:
+                        skio.imsave(processed_image_io, processed_image, plugin='pil', format_str=ext.upper())
+                        processed_image_io.seek(0)
+                        processed_file_id = upload_file_to_coze(processed_image_io)
+                    if processed_file_id is None:
+                        return Response({"detail": "处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                except Exception as e:
+                    return Response({"detail": "上传处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                allergy_image_io.seek(0)
-                allergy_file_id = upload_file_to_coze(allergy_image_io)
-                if allergy_file_id is None:
-                    return Response({"detail": "过敏处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                try:
+                    with io.BytesIO() as allergy_image_io:
+                        skio.imsave(allergy_image_io, allergy_image, plugin='pil', format_str=ext.upper())
+                        allergy_image_io.seek(0)
+                        allergy_file_id = upload_file_to_coze(allergy_image_io)
+                    if allergy_file_id is None:
+                        return Response({"detail": "过敏处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                except Exception as e:
+                    return Response({"detail": "上传过敏处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
-                freckles_image_io.seek(0)
-                freckles_file_id = upload_file_to_coze(freckles_image_io)
-                if freckles_file_id is None:
-                    return Response({"detail": "雀斑处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                try:
+                    with io.BytesIO() as freckles_image_io:
+                        skio.imsave(freckles_image_io, freckles_image, plugin='pil', format_str=ext.upper())
+                        freckles_image_io.seek(0)
+                        freckles_file_id = upload_file_to_coze(freckles_image_io)
+                    if freckles_file_id is None:
+                        return Response({"detail": "雀斑处理后图片上传失败，无法获取文件id"}, status=status.HTTP_400_BAD_REQUEST)
+                except Exception as e:
+                    return Response({"detail": "上传雀斑处理后图片失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                 face_test_data = {
                     'images_wrinkle': {"file_id": processed_file_id},
@@ -261,62 +299,63 @@ def face_ai(request):
                 }
 
                 if face_test_serializer.is_valid():
-                    face_test_serializer.save()
+                    try:
+                        face_test_serializer.save()
+                    except Exception as e:
+                        return Response({"detail": "保存面部测试数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                else:
+                    return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+
                 result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
                 if result:
-                    parsed_data = json.loads(result.get('data'))
-                    # 处理产品数据
-                    products = []
-                    for item in parsed_data['product']:
-                        product_output = json.loads(item['output'])  # 解析嵌套的JSON字符串
-                        products.append(product_output)
+                    try:
+                        parsed_data = json.loads(result.get('data'))
+                        # 处理产品数据
+                        products = []
+                        for item in parsed_data['product']:
+                            product_output = json.loads(item['output'])  # 解析嵌套的JSON字符串
+                            products.append(product_output)
 
-                    # 处理皮肤数据
-                    skin_data = json.loads(parsed_data['skin'])  # 解析皮肤信息
+                        # 处理皮肤数据
+                        skin_data = json.loads(parsed_data['skin'])  # 解析皮肤信息
 
-                    # 返回合并后的JSON响应
-                    skin_data['评分']['皱纹']['img'] = convert_content_file_to_base64(processed_file)
-                    skin_data['评分']['斑点']['img'] = convert_content_file_to_base64(freckles_file)
-                    skin_data['评分']['红敏']['img'] = convert_content_file_to_base64(allergy_file)
+                        # 返回合并后的JSON响应
+                        skin_data['评分']['皱纹']['img'] = convert_content_file_to_base64(processed_file)
+                        skin_data['评分']['斑点']['img'] = convert_content_file_to_base64(freckles_file)
+                        skin_data['评分']['红敏']['img'] = convert_content_file_to_base64(allergy_file)
 
-                    
-                    image_file.close()
-                    processed_file.close()
-                    allergy_file.close()
-                    freckles_file.close()
-                    image_file_path = os.path.join('\media\images', image_file.name)
-                    processed_file_path = os.path.join('\media\processed_images', processed_file.name)
-                    allergy_file_path = os.path.join('\media\processed_images', allergy_file.name)
-                    freckles_file_path = os.path.join('\media\processed_images', freckles_file.name)
+                        image_file.close()
+                        processed_file.close()
+                        allergy_file.close()
+                        freckles_file.close()
+                        image_file_path = os.path.join('\\media\\images', image_file.name)
+                        processed_file_path = os.path.join('\\media\\processed_images', processed_file.name)
+                        allergy_file_path = os.path.join('\\media\\processed_images', allergy_file.name)
+                        freckles_file_path = os.path.join('\\media\\processed_images', freckles_file.name)
 
-                    print(image_file_path)
-                    print(processed_file_path)
-                    print(allergy_file_path)
-                    print(freckles_file_path)
-                    if os.path.exists(image_file_path):
-                        os.remove(image_file_path)
-                        print('删除原始图片')
-                    if os.path.exists(processed_file_path):
-                        os.remove(processed_file_path)
-                        print('删除处理后图片')
-                    if os.path.exists(allergy_file_path):
-                        os.remove(allergy_file_path)
-                        print('删除过敏处理后图片')
-                    if os.path.exists(freckles_file_path):
-                        os.remove(freckles_file_path)
-                        print('删除雀斑处理后图片')
-                        
+                        if os.path.exists(image_file_path):
+                            os.remove(image_file_path)
+                            print('删除原始图片')
+                        if os.path.exists(processed_file_path):
+                            os.remove(processed_file_path)
+                            print('删除处理后图片')
+                        if os.path.exists(allergy_file_path):
+                            os.remove(allergy_file_path)
+                            print('删除过敏处理后图片')
+                        if os.path.exists(freckles_file_path):
+                            os.remove(freckles_file_path)
+                            print('删除雀斑处理后图片')
 
-                    return Response({
-                        'products': products,
-                        'skin': skin_data,
-                        'promo_code': 'XMASSALE2024'
-                    })
-                
-                return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
-
+                        return Response({
+                            'products': products,
+                            'skin': skin_data,
+                            'promo_code': 'XMASSALE2024'
+                        })
+                    except Exception as e:
+                        return Response({"detail": "解析或处理Coze客户端返回数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "Coze客户端工作流运行失败，未获取到有效结果"}, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
-                return Response({"detail": "Exception occurred while processing image data.", "error": e}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "基础图像数据处理出现异常", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({"detail": "Image data is missing or invalid."}, status=status.HTTP_400_BAD_REQUEST)
 

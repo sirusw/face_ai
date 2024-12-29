@@ -313,6 +313,7 @@ def face_ai(request):
 
                     result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
                     if result:
+                        print(f"\033[93mCoze客户端返回数据: {result}\033[0m")
                         try:
                             parsed_data = json.loads(result.get('data'))
                             # 处理产品数据

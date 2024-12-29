@@ -81,6 +81,7 @@ def upload_file_to_coze(file_obj):
         files = {'file': (file_name, file_data)}
         response = requests.post(url, headers=headers, files=files)
         response.raise_for_status()
+        print(f"文件上传成功: {response.json()}")
         return response.json().get('data', {}).get('id')
     except requests.RequestException as e:
         print(f"文件上传出错: {e}")
@@ -182,7 +183,7 @@ def face_ai(request):
         ip = get_client_ip(request)
         today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         count_today = FaceTest.objects.filter(ip=ip, time__gte=today_start).count()
-        if count_today >= 10:
+        if count_today >= 2:
             return Response({"error": "每天最多只能提交两次"}, status=429)
 
         # 处理用户相关数据
@@ -196,7 +197,7 @@ def face_ai(request):
             'source': request.data.get('source', ''),
             'reference_code': request.data.get('reference_code', '')
         }
-        user, _ = User.objects.get_or_create(user_id=user_id, defaults=user_data)
+        user, created = User.objects.get_or_create(user_id=user_id, defaults=user_data)
 
         image_data = request.data.get('image')
         if image_data and image_data.startswith('data:image'):
@@ -257,7 +258,7 @@ def face_ai(request):
                         return Response({"detail": "处理雀斑图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                     face_test_data = {
-                        'user': user_id,
+                        'user': user.id,
                         'age': request.data.get('age'),
                         'focus': request.data.get('focus'),
                         'gender': request.data.get('gender'),
@@ -325,11 +326,11 @@ def face_ai(request):
 
                             # 返回合并后的JSON响应
                             with open(processed_file_path, 'rb') as processed_file:
-                                skin_data['评分']['皱纹']['img'] = convert_content_file_to_base64(processed_file)
+                                skin_data['Scores']['Wrinkles']['img'] = convert_content_file_to_base64(processed_file)
                             with open(freckles_file_path, 'rb') as freckles_file:
-                                skin_data['评分']['斑点']['img'] = convert_content_file_to_base64(freckles_file)
+                                skin_data['Scores']['Spots']['img'] = convert_content_file_to_base64(freckles_file)
                             with open(allergy_file_path, 'rb') as allergy_file:
-                                skin_data['评分']['红敏']['img'] = convert_content_file_to_base64(allergy_file)
+                                skin_data['Scores']['Redness/Sensitivity']['img'] = convert_content_file_to_base64(allergy_file)
 
                             return Response({
                                 'products': products,

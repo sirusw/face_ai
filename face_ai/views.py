@@ -17,6 +17,7 @@ import time
 import requests
 import base64
 from django.utils import timezone
+from scipy import ndimage
 import os
 import tempfile
 
@@ -89,91 +90,175 @@ def upload_file_to_coze(file_obj):
 
 
 def process_image_general(original_image):
-    processed_image = exposure.adjust_gamma(original_image, gamma=0.75)
-    hsv_image = rgb2hsv(processed_image)
-    hsv_image[..., 2] = exposure.rescale_intensity(hsv_image[..., 2], in_range=(0.3, 0.9))
-    processed_image = hsv2rgb(hsv_image)
-    processed_image = exposure.rescale_intensity(processed_image, in_range=(0.2, 1.0))
-    hsv_image = rgb2hsv(processed_image)
-    hsv_image[..., 1] = np.clip(hsv_image[..., 1] * 1.5, 0, 1)
-    processed_image = hsv2rgb(hsv_image)
-    pil_image = Image.fromarray((processed_image * 255).astype(np.uint8))
-
+    # 转换为float格式
+    image = original_image.astype(float) / 255.0
+    
+    # 添加轻微的高斯模糊来减少噪点
+    image = ndimage.gaussian_filter(image, sigma=0.5)
+    
+    # 转换到HSV空间
+    hsv_image = rgb2hsv(image)
+    
+    # 降低饱和度以突出纹理，但程度更温和
+    hsv_image[..., 1] *= 0.85
+    
+    # 使用更温和的CLAHE参数
+    hsv_image[..., 2] = exposure.equalize_adapthist(
+        hsv_image[..., 2], 
+        kernel_size=32,  # 减小kernel size
+        clip_limit=0.01  # 减小clip limit
+    )
+    
+    # 转回RGB
+    processed = hsv2rgb(hsv_image)
+    
+    # PIL处理
+    pil_image = Image.fromarray((processed * 255).astype(np.uint8))
+    
+    # 降低锐化程度
     enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.5)
+    pil_image = enhancer.enhance(1.3)  # 从2.0降至1.3
+    
+    # 降低对比度增强
     enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(1.5)
+    pil_image = enhancer.enhance(1.1)  # 从1.3降至1.1
+    
+    # 保持适度的亮度调整
     enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(1.5)
-
-    processed_image = np.array(pil_image) / 255.0
-    processed_image = img_as_ubyte(processed_image)
-    return processed_image
-
+    pil_image = enhancer.enhance(0.95)  # 从0.9提高到0.95
+    
+    return np.array(pil_image)
 
 def process_image_allergy(original_image):
-    allergy_image = exposure.adjust_gamma(original_image, gamma=0.75)
-    hsv_image = rgb2hsv(allergy_image)
-    hsv_image[..., 2] = exposure.rescale_intensity(hsv_image[..., 2], in_range=(0.25, 0.9))
-    allergy_image = hsv2rgb(hsv_image)
-    allergy_image = exposure.rescale_intensity(allergy_image, in_range=(0.15, 1.0))
-    hsv_image = rgb2hsv(allergy_image)
-    hsv_image[..., 1] = np.clip(hsv_image[..., 1] * 1.5, 0, 1)
-    allergy_image = hsv2rgb(hsv_image)
-    pil_image = Image.fromarray((allergy_image * 255).astype(np.uint8))
+    # 转换为float格式
+    image = original_image.astype(float) / 255.0
 
-    # 计算总的对比度增强倍数，合并重复的对比度增强操作
-    contrast_factor = 1.25 ** 4
+    # 转换到HSV空间
+    hsv_image = rgb2hsv(image)
+
+    # 改进红色区域的识别（包括更广范围的红色色调）
+    red_mask = np.logical_or.reduce((
+        hsv_image[..., 0] < 0.05,  # 纯红色
+        hsv_image[..., 0] > 0.95,  # 深红色
+        np.logical_and(            # 粉红色区域
+            hsv_image[..., 0] > 0.9,
+            hsv_image[..., 0] < 0.98
+        )
+    ))
+
+    # 创建更大范围的平滑过渡mask
+    smooth_mask = ndimage.gaussian_filter(red_mask.astype(float), sigma=1.5)
+
+    # 在红色区域增强红色通道（确保值在0-1之间）
+    rgb_image = hsv2rgb(hsv_image)
+    red_enhanced = rgb_image[..., 0] * np.where(smooth_mask > 0.1, 1.05, 1.0)
+    rgb_image[..., 0] = np.clip(red_enhanced, 0, 1)
+
+    # 转回HSV以进行进一步处理
+    hsv_image = rgb2hsv(rgb_image)
+
+    # 增强红色区域的饱和度（确保值在0-1之间）
+    saturation = np.where(
+        smooth_mask > 0.1,
+        hsv_image[..., 1] * 1.15,
+        hsv_image[..., 1] * 0.95
+    )
+    hsv_image[..., 1] = np.clip(saturation, 0, 1)
+
+    # 轻微提高红色区域的亮度（确保值在0-1之间）
+    value = np.where(
+        smooth_mask > 0.1,
+        hsv_image[..., 2] * 1.05,
+        hsv_image[..., 2]
+    )
+    hsv_image[..., 2] = np.clip(value, 0, 1)
+
+    # 应用自适应的CLAHE
+    clip_limit_value = np.percentile(hsv_image[..., 2], 90) * 0.01
+    hsv_image[..., 2] = exposure.equalize_adapthist(
+        hsv_image[..., 2],
+        kernel_size=16,
+        clip_limit=clip_limit_value
+    )
+
+    # 转回RGB
+    processed = hsv2rgb(hsv_image)
+
+    # 确保所有值都在0-1范围内
+    processed = np.clip(processed, 0, 1)
+
+    # 应用轻微的高斯模糊来平滑过渡
+    processed = ndimage.gaussian_filter(processed, sigma=0.5)
+
+    # 转换为8位整数格式
+    processed_uint8 = (processed * 255).astype(np.uint8)
+
+    # PIL处理
+    pil_image = Image.fromarray(processed_uint8)
+
+    # 轻微增强对比度
     enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(contrast_factor)
+    pil_image = enhancer.enhance(1.05)
 
+    # 轻微锐化
     enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.5)
+    pil_image = enhancer.enhance(1.05)
+
+    # 调整整体色温使其稍微偏暖
     enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(0.75)
-    enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(1.5)
+    pil_image = enhancer.enhance(1.05)
 
-    allergy_image = np.array(pil_image) / 255.0
-    allergy_image = img_as_ubyte(allergy_image)
-    return allergy_image
-
+    return np.array(pil_image)
 
 def process_image_freckles(original_image):
-    freckles_image = exposure.adjust_gamma(original_image, gamma=0.625)
-    hsv_image = rgb2hsv(freckles_image)
-    hsv_image[..., 2] = exposure.rescale_intensity(hsv_image[..., 2], in_range=(0.25, 0.9))
-    freckles_image = hsv2rgb(hsv_image)
-    freckles_image = exposure.rescale_intensity(freckles_image, in_range=(0.15, 1.0))
-    hsv_image = rgb2hsv(freckles_image)
-    hsv_image[..., 1] = np.clip(hsv_image[..., 1] * 0.75, 0, 1)
-    freckles_image = hsv2rgb(hsv_image)
-    pil_image = Image.fromarray((freckles_image * 255).astype(np.uint8))
+    # 转换为float格式
+    image = original_image.astype(float) / 255.0
 
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(0.75)
-    enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(0.75)
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.5)
-    enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(1.5)
+    # 转换到HSV空间
+    hsv_image = rgb2hsv(image)
 
-    freckles_image = np.array(pil_image) / 255.0
-    freckles_image = img_as_ubyte(freckles_image)
-    return freckles_image
+    # 改进的棕色区域识别
+    brown_mask = np.logical_and.reduce((
+        hsv_image[..., 0] >= 0.05,
+        hsv_image[..., 0] <= 0.15,
+        hsv_image[..., 1] >= 0.2  # 添加饱和度条件
+    ))
+
+    # 创建平滑过渡的mask
+    smooth_mask = ndimage.gaussian_filter(brown_mask.astype(float), sigma=1.2)
+
+    # 温和地增强棕色区域
+    hsv_image[..., 1] = hsv_image[..., 1] * (1 + 0.15 * smooth_mask)
+
+    # 更温和的明度调整
+    hsv_image[..., 2] = exposure.equalize_adapthist(
+        hsv_image[..., 2],
+        kernel_size=16,
+        clip_limit=0.008
+    )
+
+    # 转回RGB
+    processed = hsv2rgb(hsv_image)
+
+    # 应用轻微的高斯模糊来减少噪点
+    processed = ndimage.gaussian_filter(processed, sigma=0.25)
+
+    # PIL处理
+    pil_image = Image.fromarray((processed * 255).astype(np.uint8))
+
+    # 温和的对比度增强
+    enhancer = ImageEnhance.Contrast(pil_image)
+    pil_image = enhancer.enhance(1.05)
+
+    # 轻微锐化
+    enhancer = ImageEnhance.Sharpness(pil_image)
+    pil_image = enhancer.enhance(1.05)
+
+    # 保持适度的亮度
+    enhancer = ImageEnhance.Brightness(pil_image)
+    pil_image = enhancer.enhance(0.95)
+
+    return np.array(pil_image)
 
 
 @api_view(['POST'])
@@ -331,7 +416,7 @@ def face_ai(request):
                             with open(freckles_file_path, 'rb') as freckles_file:
                                 skin_data['Scores']['Spots']['img'] = convert_content_file_to_base64(freckles_file)
                             with open(allergy_file_path, 'rb') as allergy_file:
-                                skin_data['Scores']['Redness/Sensitivity']['img'] = convert_content_file_to_base64(allergy_file)
+                                skin_data['Scores']['Redness']['img'] = convert_content_file_to_base64(allergy_file)
 
                             return Response({
                                 'products': products,

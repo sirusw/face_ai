@@ -168,7 +168,7 @@ def process_image_allergy(original_image):
     # 轻微提高红色区域的亮度（确保值在0-1之间）
     value = np.where(
         smooth_mask > 0.1,
-        hsv_image[..., 2] * 1.05,
+        hsv_image[..., 2] * .85,
         hsv_image[..., 2]
     )
     hsv_image[..., 2] = np.clip(value, 0, 1)
@@ -198,17 +198,19 @@ def process_image_allergy(original_image):
 
     # 轻微增强对比度
     enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.05)
+    pil_image = enhancer.enhance(1.25)
 
     # 轻微锐化
     enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.05)
+    pil_image = enhancer.enhance(1.55)
 
     # 调整整体色温使其稍微偏暖
     enhancer = ImageEnhance.Color(pil_image)
     pil_image = enhancer.enhance(1.05)
 
     return np.array(pil_image)
+
+
 
 def process_image_freckles(original_image):
     # 转换为float格式
@@ -252,7 +254,7 @@ def process_image_freckles(original_image):
 
     # 轻微锐化
     enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.05)
+    pil_image = enhancer.enhance(1.35)
 
     # 保持适度的亮度
     enhancer = ImageEnhance.Brightness(pil_image)

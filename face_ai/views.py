@@ -1,17 +1,12 @@
 import base64
-from django.core.files.base import ContentFile
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from.models import User, FaceTest
-from.serializers import FaceTestSerializer
 from skimage import io as skio, exposure, img_as_ubyte
-from skimage.color import rgb2hsv, hsv2rgb
 from skimage.transform import resize  # 新增导入，用于图像缩放
-import numpy as np
 import io
-from PIL import Image, ImageEnhance
-from.settings import BOT_ID, API_KEY, WORKFLOW_ID
+from.settings import API_KEY, WORKFLOW_ID
 import json
 import time
 import requests
@@ -20,6 +15,9 @@ from django.utils import timezone
 from scipy import ndimage
 import os
 import tempfile
+import dlib
+from .utils import upload_file_to_coze, process_image_general, process_image_allergy, process_image_freckles, convert_content_file_to_base64
+import traceback
 
 
 class CozeAPIClient:
@@ -59,210 +57,6 @@ class CozeAPIClient:
 coze_client = CozeAPIClient()
 
 
-def convert_content_file_to_base64(content_file):
-    content_file.seek(0)
-    content = content_file.read()
-    base64_encoded = base64.b64encode(content).decode('utf-8')
-    return base64_encoded
-
-
-def upload_file_to_coze(file_obj):
-    url = "https://api.coze.com/v1/files/upload"
-    headers = {
-        "Authorization": f"Bearer {API_KEY}"
-    }
-    try:
-        if isinstance(file_obj, ContentFile):
-            file_obj.seek(0)
-            file_name = file_obj.name
-            file_data = file_obj.read()
-        else:
-            file_name = "temp_file"
-            file_data = file_obj
-        files = {'file': (file_name, file_data)}
-        response = requests.post(url, headers=headers, files=files)
-        response.raise_for_status()
-        print(f"文件上传成功: {response.json()}")
-        return response.json().get('data', {}).get('id')
-    except requests.RequestException as e:
-        print(f"文件上传出错: {e}")
-        return None
-
-
-def process_image_general(original_image):
-    # 转换为float格式
-    image = original_image.astype(float) / 255.0
-    
-    # 添加轻微的高斯模糊来减少噪点
-    image = ndimage.gaussian_filter(image, sigma=0.5)
-    
-    # 转换到HSV空间
-    hsv_image = rgb2hsv(image)
-    
-    # 降低饱和度以突出纹理，但程度更温和
-    hsv_image[..., 1] *= 0.85
-    
-    # 使用更温和的CLAHE参数
-    hsv_image[..., 2] = exposure.equalize_adapthist(
-        hsv_image[..., 2], 
-        kernel_size=32,  # 减小kernel size
-        clip_limit=0.01  # 减小clip limit
-    )
-    
-    # 转回RGB
-    processed = hsv2rgb(hsv_image)
-    
-    # PIL处理
-    pil_image = Image.fromarray((processed * 255).astype(np.uint8))
-    
-    # 降低锐化程度
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.3)  # 从2.0降至1.3
-    
-    # 降低对比度增强
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.1)  # 从1.3降至1.1
-    
-    # 保持适度的亮度调整
-    enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(0.95)  # 从0.9提高到0.95
-    
-    return np.array(pil_image)
-
-def process_image_allergy(original_image):
-    # 转换为float格式
-    image = original_image.astype(float) / 255.0
-
-    # 转换到HSV空间
-    hsv_image = rgb2hsv(image)
-
-    # 改进红色区域的识别（包括更广范围的红色色调）
-    red_mask = np.logical_or.reduce((
-        hsv_image[..., 0] < 0.05,  # 纯红色
-        hsv_image[..., 0] > 0.95,  # 深红色
-        np.logical_and(            # 粉红色区域
-            hsv_image[..., 0] > 0.9,
-            hsv_image[..., 0] < 0.98
-        )
-    ))
-
-    # 创建更大范围的平滑过渡mask
-    smooth_mask = ndimage.gaussian_filter(red_mask.astype(float), sigma=1.5)
-
-    # 在红色区域增强红色通道（确保值在0-1之间）
-    rgb_image = hsv2rgb(hsv_image)
-    red_enhanced = rgb_image[..., 0] * np.where(smooth_mask > 0.1, 1.05, 1.0)
-    rgb_image[..., 0] = np.clip(red_enhanced, 0, 1)
-
-    # 转回HSV以进行进一步处理
-    hsv_image = rgb2hsv(rgb_image)
-
-    # 增强红色区域的饱和度（确保值在0-1之间）
-    saturation = np.where(
-        smooth_mask > 0.1,
-        hsv_image[..., 1] * 1.15,
-        hsv_image[..., 1] * 0.95
-    )
-    hsv_image[..., 1] = np.clip(saturation, 0, 1)
-
-    # 轻微提高红色区域的亮度（确保值在0-1之间）
-    value = np.where(
-        smooth_mask > 0.1,
-        hsv_image[..., 2] * .85,
-        hsv_image[..., 2]
-    )
-    hsv_image[..., 2] = np.clip(value, 0, 1)
-
-    # 应用自适应的CLAHE
-    clip_limit_value = np.percentile(hsv_image[..., 2], 90) * 0.01
-    hsv_image[..., 2] = exposure.equalize_adapthist(
-        hsv_image[..., 2],
-        kernel_size=16,
-        clip_limit=clip_limit_value
-    )
-
-    # 转回RGB
-    processed = hsv2rgb(hsv_image)
-
-    # 确保所有值都在0-1范围内
-    processed = np.clip(processed, 0, 1)
-
-    # 应用轻微的高斯模糊来平滑过渡
-    processed = ndimage.gaussian_filter(processed, sigma=0.5)
-
-    # 转换为8位整数格式
-    processed_uint8 = (processed * 255).astype(np.uint8)
-
-    # PIL处理
-    pil_image = Image.fromarray(processed_uint8)
-
-    # 轻微增强对比度
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.25)
-
-    # 轻微锐化
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.55)
-
-    # 调整整体色温使其稍微偏暖
-    enhancer = ImageEnhance.Color(pil_image)
-    pil_image = enhancer.enhance(1.05)
-
-    return np.array(pil_image)
-
-
-
-def process_image_freckles(original_image):
-    # 转换为float格式
-    image = original_image.astype(float) / 255.0
-
-    # 转换到HSV空间
-    hsv_image = rgb2hsv(image)
-
-    # 改进的棕色区域识别
-    brown_mask = np.logical_and.reduce((
-        hsv_image[..., 0] >= 0.05,
-        hsv_image[..., 0] <= 0.15,
-        hsv_image[..., 1] >= 0.2  # 添加饱和度条件
-    ))
-
-    # 创建平滑过渡的mask
-    smooth_mask = ndimage.gaussian_filter(brown_mask.astype(float), sigma=1.2)
-
-    # 温和地增强棕色区域
-    hsv_image[..., 1] = hsv_image[..., 1] * (1 + 0.15 * smooth_mask)
-
-    # 更温和的明度调整
-    hsv_image[..., 2] = exposure.equalize_adapthist(
-        hsv_image[..., 2],
-        kernel_size=16,
-        clip_limit=0.008
-    )
-
-    # 转回RGB
-    processed = hsv2rgb(hsv_image)
-
-    # 应用轻微的高斯模糊来减少噪点
-    processed = ndimage.gaussian_filter(processed, sigma=0.25)
-
-    # PIL处理
-    pil_image = Image.fromarray((processed * 255).astype(np.uint8))
-
-    # 温和的对比度增强
-    enhancer = ImageEnhance.Contrast(pil_image)
-    pil_image = enhancer.enhance(1.05)
-
-    # 轻微锐化
-    enhancer = ImageEnhance.Sharpness(pil_image)
-    pil_image = enhancer.enhance(1.35)
-
-    # 保持适度的亮度
-    enhancer = ImageEnhance.Brightness(pil_image)
-    pil_image = enhancer.enhance(0.95)
-
-    return np.array(pil_image)
-
-
 @api_view(['POST'])
 def face_ai(request):
     if request.method == 'POST':
@@ -284,7 +78,7 @@ def face_ai(request):
             'source': request.data.get('source', ''),
             'reference_code': request.data.get('reference_code', '')
         }
-        user, created = User.objects.get_or_create(user_id=user_id, defaults=user_data)
+        # user, created = User.objects.get_or_create(user_id=user_id, defaults=user_data)
 
         image_data = request.data.get('image')
         if image_data and image_data.startswith('data:image'):
@@ -295,19 +89,54 @@ def face_ai(request):
                 decoded_image = base64.b64decode(imgstr)
 
                 try:
-                    # 读取原始图像，对大尺寸图像进行缩放
                     original_image = skio.imread(io.BytesIO(decoded_image))
+
+                    # 检查图像是否为8位灰度或RGB
+                    if original_image.ndim not in [2, 3] or (original_image.ndim == 3 and original_image.shape[2] != 3):
+                        return Response({"detail": "Unsupported image type, must be 8bit gray or RGB image."}, status=status.HTTP_400_BAD_REQUEST)
+
+                    # 确保图像是8位
+                    if original_image.dtype != 'uint8':
+                        original_image = img_as_ubyte(original_image)
+
                     while original_image.size > 1024 * 1024:  # 大于1MB
-                        original_image = resize(original_image, (original_image.shape[0] // 2, original_image.shape[1] // 2),
-                                                anti_aliasing=True)
+                        original_image = resize(original_image, (original_image.shape[0] // 2, original_image.shape[1] // 2), anti_aliasing=True)
+                        
+                        # 再次检查类型和位深度
+                        if original_image.ndim not in [2, 3] or (original_image.ndim == 3 and original_image.shape[2] != 3):
+                            return Response({"detail": "Unsupported image type after scaling, must be 8bit gray or RGB image."}, status=status.HTTP_400_BAD_REQUEST)
+                        
+                        if original_image.dtype != 'uint8':
+                            original_image = img_as_ubyte(original_image)
                 except Exception as e:
                     return Response({"detail": "读取原始图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                 # 使用临时目录来管理中间文件，确保最后能统一清理
                 with tempfile.TemporaryDirectory() as temp_dir:
                     try:
+                        # 加载人脸检测器和形状预测器
+                        detector = dlib.get_frontal_face_detector()
+                        try:
+                            predictor = dlib.shape_predictor('./shape_predictor_68_face_landmarks.dat')
+                        except RuntimeError as e:
+                            return Response({"detail": "无法加载形状预测器文件", "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+                        # 检测人脸
+                        faces = detector(original_image, 1)
+                        if len(faces) == 0:
+                            return Response({"detail": "未检测到人脸"}, status=status.HTTP_400_BAD_REQUEST)
+                        # shape = predictor(original_image, face)
+                        # 只处理检测到的第一张人脸
+                        face = faces[0]
+                        shape = predictor(original_image, face)
+                        x, y, w, h = face.left(), face.top(), face.width(), face.height()
+                        # 扩展区域以包括前额
+                        y = max(0, y - int(0.3 * h))  # 向上扩展30%的高度
+                        h = h + int(0.3 * h)  # 增加高度
+                        face_image = original_image[y:y + h, x:x + w]
+
                         # 处理通用图像
-                        processed_image = process_image_general(original_image)
+                        processed_image = process_image_general(face_image)
                         processed_image_io = io.BytesIO()
                         skio.imsave(processed_image_io, processed_image, plugin='pil', format_str=ext.upper())
                         processed_image_io.seek(0)
@@ -316,11 +145,11 @@ def face_ai(request):
                         with open(processed_file_path, 'wb') as processed_file:
                             processed_file.write(processed_image_io.read())
                     except Exception as e:
-                        return Response({"detail": "处理通用图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                        return Response({"detail": "处理通用图像失败", "error": str(e), "traceback": traceback.format_exc()}, status=status.HTTP_400_BAD_REQUEST)
 
                     try:
                         # 处理过敏相关图像
-                        allergy_image = process_image_allergy(original_image)
+                        allergy_image = process_image_allergy(face_image)
                         allergy_image_io = io.BytesIO()
                         skio.imsave(allergy_image_io, allergy_image, plugin='pil', format_str=ext.upper())
                         allergy_image_io.seek(0)
@@ -333,7 +162,7 @@ def face_ai(request):
 
                     try:
                         # 处理雀斑相关图像
-                        freckles_image = process_image_freckles(original_image)
+                        freckles_image = process_image_freckles(face_image)
                         freckles_image_io = io.BytesIO()
                         skio.imsave(freckles_image_io, freckles_image, plugin='pil', format_str=ext.upper())
                         freckles_image_io.seek(0)
@@ -345,7 +174,7 @@ def face_ai(request):
                         return Response({"detail": "处理雀斑图像失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
                     face_test_data = {
-                        'user': user.id,
+                        # 'user': user.id,
                         'age': request.data.get('age'),
                         'focus': request.data.get('focus'),
                         'gender': request.data.get('gender'),
@@ -353,7 +182,7 @@ def face_ai(request):
                         'makeup_style': request.data.get('makeup_style'),
                         'ip': get_client_ip(request)
                     }
-                    face_test_serializer = FaceTestSerializer(data=face_test_data)
+                    # face_test_serializer = FaceTestSerializer(data=face_test_data)
 
                     try:
                         with open(processed_file_path, 'rb') as processed_image_file:
@@ -390,13 +219,13 @@ def face_ai(request):
                         'makeup_style': request.data.get('makeup_style')
                     }
 
-                    if face_test_serializer.is_valid():
-                        try:
-                            face_test_serializer.save()
-                        except Exception as e:
-                            return Response({"detail": "保存面部测试数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-                    else:
-                        return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+                    # if face_test_serializer.is_valid():
+                    #     try:
+                    #         face_test_serializer.save()
+                    #     except Exception as e:
+                    #         return Response({"detail": "保存面部测试数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                    # else:
+                    #     return Response({"detail": "Face test data is invalid.", "errors": face_test_serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
                     result = coze_client.run_workflow(WORKFLOW_ID, face_test_data)
                     if result:
@@ -423,7 +252,7 @@ def face_ai(request):
                             return Response({
                                 'products': products,
                                 'skin': skin_data,
-                                'promo_code': 'XMASSALE2024'
+                                'promo_code': 'FACEAISALE2025'
                             })
                         except Exception as e:
                             return Response({"detail": "解析或处理Coze客户端返回数据失败", "error": str(e)}, status=status.HTTP_400_BAD_REQUEST)

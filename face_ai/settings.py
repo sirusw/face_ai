@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure--9y8(8j+nzwde7d(1hbrb1r^vyp%*k&_ad%gdijo)1)k0=qozy'
 
-API_KEY= 'pat_zwL5CDKla1O1lsjZtsN9BYOuu1KfWotUPwOIa3HcYyQEg15xlq86ysFHnI60OgIu'
+API_KEY= 'pat_2hw56I8OSXrEUZl22Yn1yeSmJjSnwg3mnHCRAT9a7yIewP6Ih7wH9zT5NnVQz8eX'
 
 BOT_ID = '7444541492586168337'
 
@@ -32,7 +32,7 @@ WORKFLOW_ID = '7448441979929968646'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'https://skinscan.life']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
 
 
 

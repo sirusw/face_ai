@@ -22,7 +22,7 @@ from .views import face_ai
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/faceai/', face_ai, name='face_ai'),
+    path('api/face_ai/', face_ai, name='face_ai'),
 ]
 
 if settings.DEBUG:

@@ -103,7 +103,7 @@ def process_image_allergy(original_image):
 
     # 在红色区域增强红色通道（确保值在0-1之间）
     rgb_image = hsv2rgb(hsv_image)
-    red_enhanced = rgb_image[..., 0] * np.where(smooth_mask > 0.1, 1.05, 1.0)
+    red_enhanced = rgb_image[..., 0] * np.where(smooth_mask > 0.1, 1.15, 1.0)
     rgb_image[..., 0] = np.clip(red_enhanced, 0, 1)
 
     # 转回HSV以进行进一步处理
@@ -112,7 +112,7 @@ def process_image_allergy(original_image):
     # 增强红色区域的饱和度（确保值在0-1之间）
     saturation = np.where(
         smooth_mask > 0.1,
-        hsv_image[..., 1] * 1.15,
+        hsv_image[..., 1] * 1.35,
         hsv_image[..., 1] * 0.95
     )
     hsv_image[..., 1] = np.clip(saturation, 0, 1)
@@ -120,7 +120,7 @@ def process_image_allergy(original_image):
     # 轻微提高红色区域的亮度（确保值在0-1之间）
     value = np.where(
         smooth_mask > 0.1,
-        hsv_image[..., 2] * .85,
+        hsv_image[..., 2] * .9,
         hsv_image[..., 2]
     )
     hsv_image[..., 2] = np.clip(value, 0, 1)

@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure--9y8(8j+nzwde7d(1hbrb1r^vyp%*k&_ad%gdijo)1)k0=qozy'
 
-API_KEY= 'pat_2hw56I8OSXrEUZl22Yn1yeSmJjSnwg3mnHCRAT9a7yIewP6Ih7wH9zT5NnVQz8eX'
+API_KEY= 'pat_asbv8Kk5bxgURdfD9ryKTrrxDXGRXqbr7EoKRWn06YOGmt2pNuD92mBkF2iI67k4'
 
 BOT_ID = '7444541492586168337'
 

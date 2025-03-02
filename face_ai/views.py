@@ -18,6 +18,7 @@ import tempfile
 import dlib
 from .utils import upload_file_to_coze, process_image_general, process_image_allergy, process_image_freckles, convert_content_file_to_base64
 import traceback
+from celery import shared_task
 
 
 class CozeAPIClient:
@@ -232,6 +233,8 @@ def face_ai(request):
                         print(f"\033[93mCoze客户端返回数据: {result}\033[0m")
                         try:
                             parsed_data = json.loads(result.get('data'))
+
+                            print(f"\033[93m解析后的数据: {parsed_data}\033[0m")
                             # 处理产品数据
                             products = []
                             for item in parsed_data['product']:
